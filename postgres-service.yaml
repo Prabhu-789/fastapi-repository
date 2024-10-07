@@ -1,0 +1,12 @@
+#postgres-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-service
+spec:
+  type: ClusterIP  # Use ClusterIP to allow internal communication
+  selector:
+    app: postgres
+  ports:
+    - port: 5432       # The port that the service will expose
+      targetPort: 5432 # The port that the PostgreSQL container listens on
