@@ -3,11 +3,16 @@ from fastapi import APIRouter, HTTPException, Depends, status
 from sqlalchemy.orm import Session
 from database import SessionLocal
 from services import UserService
+from sqlalchemy.exc import SQLAlchemyError
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from schemas import RegisteredUserCreate, RegisteredUserResponse, User
 from auth import verify_access_token
+import logging
 
 router = APIRouter()
+
+logger=logging.getLogger(__name__)
+
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
@@ -23,15 +28,27 @@ def authenticate_user(token: str = Depends(oauth2_scheme), db: Session = Depends
     if service.is_token_blacklisted(token):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has been logged out")
     
-    username = verify_access_token(token)
-    if not username:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    try:
+        username = verify_access_token(token)
+        if not username:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    except Exception as e:
+        logger.error(f"Token verification failed: {str(e)}")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token verification failed")
+    
     return username
 
-@router.post('/register', response_model=RegisteredUserResponse, status_code=status.HTTP_200_OK)
+@router.post('/register', response_model=RegisteredUserResponse, status_code=status.HTTP_201_CREATED)
 def register_user(Ruser: RegisteredUserCreate, db: Session = Depends(get_db)):
+    logger.info(f"Registering new user: {Ruser.name}")
     service = UserService(db)
-    new_user = service.register_user(Ruser)
+    try:
+        new_user = service.register_user(Ruser)
+    except SQLAlchemyError as e:
+        logger.error(f"Failed to register user: {str(e)}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to register user")
+    
+    logger.info(f"User {new_user.name} registered successfully")
     return new_user
 # @router.post('/register', response_model=RegisteredUserResponse, status_code=status.HTTP_200_OK)
 # async def register_user(Ruser: RegisteredUserCreate, db: Session = Depends(get_db)):
@@ -47,23 +64,41 @@ def register_user(Ruser: RegisteredUserCreate, db: Session = Depends(get_db)):
 #     return new_user
 
 
-@router.get('/registeredusers', response_model=list[RegisteredUserResponse])
+@router.get('/registeredusers', response_model=list[RegisteredUserResponse], status_code=status.HTTP_200_OK)
 def get_all_registered_users(db: Session = Depends(get_db)):
+    logger.info("Fetching registered users")
     service = UserService(db)
-    return service.get_all_registered_users()
+    try:
+        users = service.get_all_registered_users()
+    except SQLAlchemyError as e:
+        logger.error(f"Failed to fetch registered users: {str(e)}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to fetch users")
+    
+    logger.info("Returned all users")
+    return users
 
 @router.post('/login', response_model=dict)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     service = UserService(db)
-    token = service.login(form_data.username, form_data.password)
+    try:
+        token = service.login(form_data.username, form_data.password)
+    except SQLAlchemyError as e:
+        logger.error(f"Login error: {str(e)}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Login error")
+    
     if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     return {"access_token": token, "token_type": "bearer"}
 
+
 @router.post('/logout', status_code=status.HTTP_200_OK)
 def logout(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     service = UserService(db)
-    service.logout(token)
+    try:
+        service.logout(token)
+    except Exception as e:
+        logger.error(f"Logout failed: {str(e)}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Logout failed")
     return {"message": "Successfully logged out"}
 
 @router.get('/getallusers', response_model=list[User], status_code=status.HTTP_200_OK)
@@ -90,7 +125,7 @@ def update_user(user_id: int, user: User, token: str = Depends(oauth2_scheme), d
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     return updated_user
 
-@router.delete('/deleteuser/{user_id}', response_model=User, status_code=200)
+@router.delete('/deleteuser/{user_id}', response_model=User, status_code=status.HTTP_200_OK)
 def delete_user(user_id: int, token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     authenticate_user(token, db)
     service = UserService(db)
